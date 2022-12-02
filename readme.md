@@ -1,8 +1,8 @@
 # AWS KMS example in Go for new starter
 
-This is my first program in `GO` using `AWS KMS`.
+This is my first program in `Go` using `AWS KMS`.
 The intent is to provide a simple program for people to step in `GO `Lang Programming.
-AWS KMS SDK for `GO` is available at [ AWS kms.](https://aws.amazon.com/sdk-for-go/)
+AWS KMS SDK for `Go` is available at [ AWS kms.](https://aws.amazon.com/sdk-for-go/)
 
 The program provide the following features :
 - List all `KMS` Keys in the account 
