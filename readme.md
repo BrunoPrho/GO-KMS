@@ -1,4 +1,4 @@
-# AWS KMS example in GO for dummy
+# AWS KMS example in Go for new starter
 
 This is my first program in `GO` using `AWS KMS`.
 The intent is to provide a simple program for people to step in `GO `Lang Programming.
