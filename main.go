@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -29,6 +30,123 @@ var (
 	colorWhite = "\033[37m"
 )
 
+type KMSObj struct {
+	svc *kms.KMS
+}
+
+type KMSInstance interface {
+	Connect() error
+	ListKeys() error
+	DescribeKey(*kms.KeyListEntry) error
+	Wrap(*kms.KeyListEntry, []byte) (*kms.EncryptOutput, error)
+	Unwrap(*kms.KeyListEntry, *kms.EncryptOutput) (*kms.DecryptOutput, error)
+}
+
+func (obj *KMSObj) DescribeKey(ikey *kms.KeyListEntry) error {
+	InfoLog.Println(
+		colorReset, "Key Id", colorRed, *ikey.KeyId,
+		colorReset, "Key Arn", colorBlue, *ikey.KeyArn)
+	input := &kms.DescribeKeyInput{KeyId: aws.String(*ikey.KeyId)}
+	result, err := obj.svc.DescribeKey(input)
+	if err != nil {
+		ErrorLog.Println("Error ")
+		return err
+	}
+	InfoLog.Println("DescribeKey", result)
+	return nil
+}
+
+func (obj KMSObj) ProcessEncryptionTest(ikey *kms.KeyListEntry) error {
+
+	inputEnc := &kms.EncryptInput{
+		KeyId:     aws.String(*ikey.KeyId),
+		Plaintext: []byte("this must be secret protected by AWS envelop encryption!"),
+	}
+	InfoLog.Println(colorBlue, "Initial Clear text:", colorRed, string(inputEnc.Plaintext), colorReset)
+	// h := make([]byte, 32)
+	// Compute a 64-byte hash of buf and put it in h.
+	h := sha3.Sum256(inputEnc.Plaintext)
+	InfoLog.Println(colorBlue, "SHA3 Initial Clear text:", colorRed, hex.EncodeToString(h[:32]), colorReset)
+
+	cryptogram, errEnc := obj.svc.Encrypt(inputEnc)
+	if errEnc != nil {
+		ErrorLog.Println("Error : ", errEnc.Error())
+		return errEnc
+	} else {
+		InfoLog.Println("Cryptogram:", cryptogram)
+
+		inputDec := &kms.DecryptInput{
+			CiphertextBlob: cryptogram.CiphertextBlob,
+			KeyId:          aws.String(*ikey.KeyId),
+		}
+		clearText, errDec := obj.svc.Decrypt(inputDec)
+		InfoLog.Println(colorYellow, "Decrypt Done:")
+		if errDec != nil {
+			ErrorLog.Println("Error ")
+			return errDec
+		} else {
+			InfoLog.Println(colorBlue, "Clear Unwrapped text:", colorRed, string(clearText.Plaintext), colorReset)
+			hc := sha3.Sum256(clearText.Plaintext)
+			DebugLog.Println(colorBlue, "SHA3 Unwrapped  text:", colorRed, hex.EncodeToString(hc[:32]), colorReset)
+		}
+	}
+	return nil
+}
+func (obj *KMSObj) Unwrap(ikey *kms.KeyListEntry, wrappedDek *kms.EncryptOutput) (*kms.DecryptOutput, error) {
+	inputDec := &kms.DecryptInput{
+		CiphertextBlob: wrappedDek.CiphertextBlob,
+		KeyId:          aws.String(*ikey.KeyId),
+	}
+	unwrapDek, errDec := obj.svc.Decrypt(inputDec)
+	InfoLog.Println(colorYellow, "Decrypt Done:")
+	if errDec != nil {
+		ErrorLog.Println("Error ")
+	} else {
+		InfoLog.Println(colorBlue, "Unwrapped Clear DEK:", colorRed, hex.EncodeToString(unwrapDek.Plaintext), colorReset)
+		hc := sha3.Sum256(unwrapDek.Plaintext)
+		DebugLog.Println(colorBlue, "SHA3 Unwrapped Clear DEK:", colorRed, hex.EncodeToString(hc[:32]), colorReset)
+	}
+	return unwrapDek, nil
+}
+func (obj *KMSObj) Wrap(ikey *kms.KeyListEntry, dek []byte) (*kms.EncryptOutput, error) {
+	inputEnc := &kms.EncryptInput{
+		KeyId:     aws.String(*ikey.KeyId),
+		Plaintext: dek,
+	}
+	// InfoLog.Println(colorBlue, "Initial Clear DEK:", colorRed, string(inputEnc.Plaintext), colorReset)
+	// Compute SHA-3 input
+	h := sha3.Sum256(inputEnc.Plaintext)
+	InfoLog.Println(colorBlue, "SHA3 Initial DEK:", colorRed, hex.EncodeToString(h[:32]), colorReset)
+
+	wrappedDek, errEnc := obj.svc.Encrypt(inputEnc)
+	if errEnc != nil {
+		ErrorLog.Println("Error : ", errEnc.Error())
+		return nil, errors.New("Error Encrypting with KMS")
+	} else {
+		InfoLog.Println("Wrapped DEK:", wrappedDek)
+
+	}
+	return wrappedDek, nil
+}
+func (obj *KMSObj) Connect() error {
+	var value = error(nil)
+	// Initialize a session from the shared credentials file ~/.aws/credentials.
+	awsSession, err := session.NewSession(&aws.Config{
+		Region: aws.String("ap-southeast-2")},
+	)
+
+	if err != nil {
+		value = err
+		ErrorLog.Println("Error Done")
+	} else { // List KMS service client
+		obj.svc = kms.New(awsSession)
+		value = nil
+	}
+	DebugLog.Println("Connection Done")
+	return value
+
+}
+
 func init() {
 	file, err := os.OpenFile("LOG.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
@@ -48,16 +166,15 @@ func init() {
 }
 
 func main() {
+	var KMSobjinstance KMSObj
 
-	// Initialize a session from the shared credentials file ~/.aws/credentials.
-	awsSession, err := session.NewSession(&aws.Config{
-		Region: aws.String("ap-southeast-2")},
-	)
-
-	// List KMS service client
-	svc := kms.New(awsSession)
+	err0 := KMSobjinstance.Connect()
+	if err0 != nil {
+		return
+	}
 	input := &kms.ListKeysInput{}
-	result, err := svc.ListKeys(input)
+	result, err := KMSobjinstance.svc.ListKeys(input)
+
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
@@ -78,44 +195,9 @@ func main() {
 	}
 
 	for _, ikey := range result.Keys {
-		InfoLog.Println(
-			colorReset, "Key Id", colorRed, *ikey.KeyId,
-			colorReset, "Key Arn", colorBlue, *ikey.KeyArn)
-		input := &kms.DescribeKeyInput{KeyId: aws.String(*ikey.KeyId)}
-		result, err := svc.DescribeKey(input)
-		if err != nil {
-			ErrorLog.Println("Error ")
-		}
-		InfoLog.Println("DescribeKey", result)
-		inputEnc := &kms.EncryptInput{
-			KeyId:     aws.String(*ikey.KeyId),
-			Plaintext: []byte("this must be secret protected by AWS envelop encryption!"),
-		}
-		InfoLog.Println(colorBlue, "Initial Clear text:", colorRed, string(inputEnc.Plaintext), colorReset)
-		// h := make([]byte, 32)
-		// Compute a 64-byte hash of buf and put it in h.
-		h := sha3.Sum256(inputEnc.Plaintext)
-		InfoLog.Println(colorBlue, "SHA3 Initial Clear text:", colorRed, hex.EncodeToString(h[:32]), colorReset)
-
-		cryptogram, errEnc := svc.Encrypt(inputEnc)
-		if errEnc != nil {
-			ErrorLog.Println("Error : ", errEnc.Error())
-		} else {
-			InfoLog.Println("Cryptogram:", cryptogram)
-
-			inputDec := &kms.DecryptInput{
-				CiphertextBlob: cryptogram.CiphertextBlob,
-				KeyId:          aws.String(*ikey.KeyId),
-			}
-			clearText, errDec := svc.Decrypt(inputDec)
-			InfoLog.Println(colorYellow, "Decrypt Done:")
-			if errDec != nil {
-				ErrorLog.Println("Error ")
-			} else {
-				InfoLog.Println(colorBlue, "Clear Unwrapped text:", colorRed, string(clearText.Plaintext), colorReset)
-				hc := sha3.Sum256(clearText.Plaintext)
-				DebugLog.Println(colorBlue, "SHA3 Unwrapped  text:", colorRed, hex.EncodeToString(hc[:32]), colorReset)
-			}
+		ret := KMSobjinstance.DescribeKey(ikey)
+		ret = KMSobjinstance.ProcessEncryptionTest(ikey)
+		if ret != nil {
 			InfoLog.Println(colorYellow, "-----------------------------------------", colorReset)
 			// AES GCM
 			dek := make([]byte, 32)
@@ -123,6 +205,7 @@ func main() {
 			InfoLog.Println(colorBlue, "Key:", colorRed, hex.EncodeToString(dek))
 			plaintext := []byte("This is a secret protected by AES GCM DEK generated%!")
 			InfoLog.Println(colorBlue, "Message Clear:", colorRed, string(plaintext))
+
 			block, err := aes.NewCipher(dek)
 			if err != nil {
 				ErrorLog.Println("Error : ", err.Error())
@@ -157,27 +240,11 @@ func main() {
 			}
 			InfoLog.Println("DEK :", colorRed, hex.EncodeToString(dek))
 			InfoLog.Println(colorYellow, "-------The DEK is wrapped by a CMK-------", colorReset)
-			inputEnc := &kms.EncryptInput{
-				KeyId:     aws.String(*ikey.KeyId),
-				Plaintext: dek,
-			}
-			// InfoLog.Println(colorBlue, "Initial Clear DEK:", colorRed, string(inputEnc.Plaintext), colorReset)
-			// Compute SHA-3 input
-			h := sha3.Sum256(inputEnc.Plaintext)
-			InfoLog.Println(colorBlue, "SHA3 Initial DEK:", colorRed, hex.EncodeToString(h[:32]), colorReset)
-
-			wrappedDek, errEnc := svc.Encrypt(inputEnc)
-			if errEnc != nil {
-				ErrorLog.Println("Error : ", errEnc.Error())
+			wrappedDek, err := KMSobjinstance.Wrap(ikey, dek)
+			if err != nil {
+				ErrorLog.Println("Error ")
 			} else {
-				InfoLog.Println("Wrapped DEK:", wrappedDek)
-
-				inputDec := &kms.DecryptInput{
-					CiphertextBlob: wrappedDek.CiphertextBlob,
-					KeyId:          aws.String(*ikey.KeyId),
-				}
-				unwrapDek, errDec := svc.Decrypt(inputDec)
-				InfoLog.Println(colorYellow, "Decrypt Done:")
+				unwrapDek, errDec := KMSobjinstance.Unwrap(ikey, wrappedDek)
 				if errDec != nil {
 					ErrorLog.Println("Error ")
 				} else {
